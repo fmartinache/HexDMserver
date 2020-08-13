@@ -1,0 +1,8 @@
+# compiled c files
+*.o
+
+# emacs temporary save files
+*~
+
+# the compiled program
+HexDMserver

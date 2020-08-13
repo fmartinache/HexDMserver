@@ -1,0 +1,78 @@
+#+TITLE: README file for the HexDMserver project
+#+AUTHOR: Frantz Martinache
+
+* Purpose
+
+My goal is to write a program that drives the Hex 507 BMC deformable mirror (HexDM) that is part of the KERNEL project test bench (the KBENCH) in a semi real time context. The intended architecture follows the approach used for the SCExAO instrument: the program operates like a server that monitors the state of several shared memory data (shm) structures that will be refered to as *channels*. A channel is an entry point for an external program to interact with the DM. 
+
+Whenever one channel gets updated by an external program, the server combines the commands available on all channels (a simple addition) into what is the overall desired HexDM state, converts this state into a set of commands for the HexDM electronic driver and sends these commands to the driver. This software architecture provides the 
+
+This code relies on the [[https://github.com/milk-org/ImageStreamIO][ImageStreamIO]] C library developed by O. Guyon that is a part of the [[https://github.com/milk-org][milk-org]] organisation. Most of my software projects in python (like [[http://github.com/fmartinache/xaosim][XAOSIM]]) use read/write access to shared memory.
+
+* Mechanics
+
+The HexDM is a segmented mirror: it is made of 169 individual segments that can each be driven by three separate actuators (3 * 169 = 507), therefore enabling control of piston and tip-tilt. The HexDM driver takes commands that address actuators individuallly.
+
+I intend to keep this complexity away from the end user and give him the possbility of driving the DM in piston & tip-tilt commands directly. The server will have to translate these commands into actuator commands.
+
+Each shm input channel will be a two dimensional floating point array of size 3 \times 169. The three columns are expected to be:
+
+|--------------+----------------+---------------------|
+| column index | type of value  | unit                |
+|--------------+----------------+---------------------|
+|            0 | piston         | nanometers (nm)     |
+|            1 | horizontal tip | milliradians (mrad) |
+|            2 | vertical tilt  | milliradians (mrad) |
+|--------------+----------------+---------------------|
+
+
+* Compilation
+
+Refer to the provided [[./Makefile][Makefile]] and ensure that you have all the required libraries installed. Assuming that all is in place, simply compile the code with:
+
+#+BEGIN_SRC bash
+  make
+#+END_SRC
+
+* Using the HexDM server
+
+** start a tmux session
+
+Although not essential, the program is intended to be launched within the context of a tmux session to enable interactions with other programs. Use the following command, to start a tmux session with a window labeled "HexDM". With that tmux session started, launch the freshly compiled HexDMserver executable. At this point you should be good to go.
+
+#+BEGIN_SRC bash
+  tmux new -s HexDM
+  ./HexDMserver
+#+END_SRC
+
+which will open a prompt. The program offers a rudimentary command line environment (ncurses) that understands a small number of commands. The interface is not very sophisticated because this server runs in the background and does most things without requiring frequent input from the user. Most of the action happens at the shared memory data structure level: the user modifies a channel, the server automatically updates the combined command, converts it into a command for the driver and sends this command to the PCI board connected to the driver.
+
+** interact with the server from an external program
+
+This shell is interesting if another client program can use it to interact with the HexDMserver. This is made possible by the terminal multiplexor tmux. The client must be able to send system commands that are directed to the named tmux session.
+
+For instance, the following command, written in a separate terminal server, will display the help menu inside the HexDM window. This command of course doesn't have to be issued only from within a terminal but can also be issued by a python script.
+
+#+BEGIN_SRC bash
+  tmux send-keys -t HexDM "help" C-m
+#+END_SRC
+
+
+** commands
+
+The commands made available allow for configuration / reconfiguration of the server.
+
+|---------+----------------------------------------------------------|
+| command | description                                              |
+|---------+----------------------------------------------------------|
+| help    | prints the help menu                                     |
+| set_nch | sets/updates the number of channels used by the server   |
+| get_nch | prints the number of channels used by the server         |
+| start   | triggers the channel monitoring process                  |
+| reset   | resets one or all channels                               |
+| quit    | closes the shm data structures and shuts the driver down |
+|---------+----------------------------------------------------------|
+
+* CAVEAT
+
+At the moment, the HexDMdriver only applies piston corrections and doesn't take into account the tip-tilt. This will not last but suffices for a first test of the overall driving architecture.
