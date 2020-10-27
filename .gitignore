@@ -6,3 +6,6 @@
 
 # the compiled program
 HexDMserver
+
+# the DM log file
+log_HexDM.log

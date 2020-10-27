@@ -6,6 +6,16 @@ EXEC    = HexDMserver
 LIB     = testlib.so
 OBJECTS = HexDMserver.o ImageStreamIO.o
 
+# adding the BMC specific things as they are setup on this machine
+
+BMC_LIBDIR = $(HOME)/Progs/DM/lib/
+BMC_INCDIR = $(HOME)/Progs/DM/src/inc/
+
+CFLAGS  += -I $(BMC_INCDIR)
+LDFLAGS += -L $(BMC_LIBDIR) -lbmcmd
+
+# the makefile instructions
+
 all: $(EXEC)
 
 

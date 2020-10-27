@@ -25,6 +25,8 @@
 #include "ImageStruct.h"
 #include "ImageStreamIO.h"
 
+#include "bmc_mdlib.h"
+
 /* =========================================================================
  *                            Global variables
  * ========================================================================= */
@@ -35,22 +37,41 @@ IMAGE *shmarray = NULL; // shared memory img pointer (defined in ImageStreamIO.h
 int nch         = 4;    // number of DM channels (default = 4)
 int nseg        = 169;  // number of segments on the DM
 int ndof        = 3;    // number of d.o.f per segment (piston, tip & tilt)
+int csz         = 1024; // size of the command expected by the driver
 int keepgoing   = 0;    // flag to control the Hex DM update loop
 int allocated   = 0;    // flag to control whether the shm structures are allocated
 char dashline[80] =
   "-----------------------------------------------------------------------------\n";
 
+static tBMC sBMC = NULL; // handle
+static int sNdx = 0;     // board index
+
 /* =========================================================================
  *                       function prototypes
  * ========================================================================= */
-float* ptt_2_actuator(float* ptt);
 void print_help();
 int log_action(char *msg);
 int shm_setup(int nch0);
 int reset_channel(int chindex);
-void* hexdm_loop(void *params);
+void* hexdm_loop(); //void *params);
 float* ptt_2_actuator(float* ptt);
+static void MakeOpen(void);
 
+/* =========================================================================
+ *                                BMC API
+ * ========================================================================= */
+static void MakeOpen(void) {
+  tE	err;
+  
+  if (NULL != sBMC) { return; }
+  
+  if (kBMCEnoErr != (err = BMCopen(sNdx,&sBMC))) {
+    endwin(); // from curses back to regular env!
+    printf("MakeOpen: %d gave %s\n", sNdx, BMCgetErrStr(err));
+    exit(1);
+  }
+  return;
+}
 
 /* =========================================================================
  *                       Displays the help menu
@@ -66,6 +87,7 @@ void print_help() {
   printw(fmt, "help", "",          "prints this help message");
   printw(fmt, "quit", "",          "stops the HexDM!");
   printw(fmt, "set_nch", "integer", "sets the number of channels to val");
+  printw(fmt, "start", "",          "starts the HexDM (set_nch first!)");
   printw(fmt, "get_nch", "",        "returns the current number of channels");
   printw(fmt, "reset",   "integer", "reset channel #k (-1 for all channels)");
   printw("%s", dashline);
@@ -131,12 +153,12 @@ int shm_setup(int nch0) {
   for (ii = 0; ii < nch; ii++) {
 	sprintf(shmname, "ptt%02d", ii); // building the root name of the shm
 	ImageStreamIO_createIm_gpu(&shmarray[ii], shmname, naxis, imsize, atype, -1,
-							   shared, IMAGE_NB_SEMAPHORE, NBkw, MATH_DATA);
+				   shared, IMAGE_NB_SEMAPHORE, NBkw, MATH_DATA);
   }
   // the combined array!
   sprintf(shmname, "ptt");           // building the root name of the shm
   ImageStreamIO_createIm_gpu(&shmarray[nch], shmname, naxis, imsize, atype, -1,
-							 shared, IMAGE_NB_SEMAPHORE, NBkw, MATH_DATA);
+			     shared, IMAGE_NB_SEMAPHORE, NBkw, MATH_DATA);
 
   free(imsize);
   return 0;
@@ -184,13 +206,14 @@ int reset_channel(int chindex) {
 /* =========================================================================
  *                       DM surface control thread
  * ========================================================================= */
-void* hexdm_loop(void *params) {
+void* hexdm_loop() {//void *params) {
   uint64_t cntrs[nch];
   int ii, kk;
+  //FILE* fd;
   int updated = 0;
   float tmp_sum[nseg*ndof]; // temporary sum array
-  float* cmd; // the array that will store the DM cmd before upload
-  FILE* fd;
+  float* cmd;               // array storing the DM cmd before upload
+  tU16 pokeval;             // array uploaded to the driver
   
   // init image counters
   for (ii = 0; ii < nch; ii++) {
@@ -229,14 +252,20 @@ void* hexdm_loop(void *params) {
 	  // compute the commands to actually send to the DM here!
 	  cmd = ptt_2_actuator(shmarray[nch].array.F);
 	  
-	  // upload the command to the driver
-	  // TBD
 	  log_action("the driver command was sent!");
-	  fd = fopen("dm_cmd.txt", "w");
-	  for (ii = 0; ii < 1024; ii++) {
-		fprintf(fd, "%.2f\n", cmd[ii]);
+	  
+	  // upload the command to the driver
+	  // !!!!!!!! HERE !!!!!!!!!!
+	  for (ii = 0; ii < ndof*nseg; ii++) {
+	    pokeval = (tU16)(cmd[ii] * 65536);
+	    BMCpokeDM(sBMC, (tU32)ii, pokeval);
 	  }
-	  fclose(fd);
+	  
+	  /* fd = fopen("dm_cmd.txt", "w"); */
+	  /* for (ii = 0; ii < 1024; ii++) { */
+	  /* 	fprintf(fd, "%.2f\n", cmd[ii]); */
+	  /* } */
+	  /* fclose(fd); */
 	  
 	  // release the memory allocated for the computation of the command
 	  free(cmd);
@@ -248,21 +277,28 @@ void* hexdm_loop(void *params) {
 
 /* =========================================================================
  *    conversion from PTT commands to actuator command for the driver
+ * 
+ * expects the 3 column ptt argument to consist in:
+ * - piston values (in nanometers)
+ * - tip and tilt values (in mrad)
+ *
+ * Code developed in part by KERNEL student Coline Lopez.
  * ========================================================================= */
 float* ptt_2_actuator(float* ptt) {
-  int ii;            // dummy variable
-  int csz = 1024;    // size of the command expected by the driver
-  float again = 4.0; // actuator gain: 4 um per ADU ? To be refined
-  //float a0 = 323.75; // actuator size in microns
+  int ii;               // dummy variable
+  int csz = 1024;       // size of the command expected by the driver
+  float again = 4000.0; // actuator gain: 4 um per ADU ? To be refined
+  float a0 = 218.75;    // actuator location radius in microns
 
   float *res = (float*) malloc(csz * sizeof(float));
-
-  // for now, the piston only scenario
   
   for (ii = 0; ii < nseg; ii++) {
-	res[ii*ndof]   = ptt[ii*ndof];
-	res[ii*ndof+1] = ptt[ii*ndof];
-	res[ii*ndof+2] = ptt[ii*ndof];
+	res[ii*ndof]   = ptt[ii*ndof] +
+	  a0 * sqrt(3.0)/2.0 * ptt[ii*ndof+1] + a0/2.0 * ptt[ii*ndof+2] ; 
+	res[ii*ndof+1] = ptt[ii*ndof] -
+	  a0 * ptt[ii*ndof+2]; 
+	res[ii*ndof+2] = ptt[ii*ndof] -
+	  a0 * sqrt(3.0)/2.0 * ptt[ii*ndof+1] + a0/2.0 * ptt[ii*ndof+2];
   }
   
   for (ii = 0; ii < nseg*ndof; ii++)
@@ -271,7 +307,7 @@ float* ptt_2_actuator(float* ptt) {
 }
 
 /* =========================================================================
- *                            Main program
+ *                                Main program
  * ========================================================================= */
 int main() {
   char cmdstring[LINESIZE];
@@ -300,6 +336,11 @@ int main() {
   printw("\n");
   printw("%s", dashline);
   attroff(COLOR_PAIR(2));
+
+  // --------------------------
+  // Connect to the DM driver
+  // --------------------------
+  MakeOpen();               
   
   // --------------------------
   //   start command line
@@ -436,6 +477,12 @@ int main() {
 		  shmarray = NULL;
 		}
 		log_action("HexDM control program quit");
+
+		if (NULL != sBMC) {
+		  (void)BMCclose(sBMC);
+		  printf("\nClosing DM link\n");
+		}
+
 		exit(0);
       }
 	
