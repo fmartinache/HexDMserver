@@ -5,7 +5,7 @@
 *~
 
 # the compiled program
-HexDMserver
+HexDM_server
 
 # the DM log file
 log_HexDM.log
